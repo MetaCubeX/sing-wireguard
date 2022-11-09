@@ -1,4 +1,4 @@
-module github.com/MetaCubeX/sing-wireguard
+module github.com/metacubex/sing-wireguard
 
 go 1.19
 
