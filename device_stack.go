@@ -11,7 +11,7 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
-	"github.com/sagernet/wireguard-go/tun"
+	wgTun "github.com/sagernet/wireguard-go/tun"
 
 	"github.com/metacubex/gvisor/pkg/bufferv2"
 	"github.com/metacubex/gvisor/pkg/tcpip"
@@ -32,7 +32,7 @@ const defaultNIC tcpip.NICID = 1
 type StackDevice struct {
 	stack      *stack.Stack
 	mtu        uint32
-	events     chan tun.Event
+	events     chan wgTun.Event
 	outbound   chan stack.PacketBufferPtr
 	done       chan struct{}
 	dispatcher stack.NetworkDispatcher
@@ -49,7 +49,7 @@ func NewStackDevice(localAddresses []netip.Prefix, mtu uint32) (*StackDevice, er
 	tunDevice := &StackDevice{
 		stack:    ipStack,
 		mtu:      mtu,
-		events:   make(chan tun.Event, 1),
+		events:   make(chan wgTun.Event, 1),
 		outbound: make(chan stack.PacketBufferPtr, 256),
 		done:     make(chan struct{}),
 	}
@@ -140,8 +140,16 @@ func (w *StackDevice) ListenPacket(ctx context.Context, destination M.Socksaddr)
 	return
 }
 
+func (w *StackDevice) Inet4Address() netip.Addr {
+	return M.AddrFromIP(net.IP(w.addr4))
+}
+
+func (w *StackDevice) Inet6Address() netip.Addr {
+	return M.AddrFromIP(net.IP(w.addr6))
+}
+
 func (w *StackDevice) Start() error {
-	w.events <- tun.EventUp
+	w.events <- wgTun.EventUp
 	return nil
 }
 
@@ -199,7 +207,7 @@ func (w *StackDevice) Name() (string, error) {
 	return "sing-wireguard", nil
 }
 
-func (w *StackDevice) Events() chan tun.Event {
+func (w *StackDevice) Events() chan wgTun.Event {
 	return w.events
 }
 
