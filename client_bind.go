@@ -9,6 +9,7 @@ import (
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
+	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/wireguard-go/conn"
@@ -18,6 +19,7 @@ var _ conn.Bind = (*ClientBind)(nil)
 
 type ClientBind struct {
 	ctx                 context.Context
+	errorHandler        E.Handler
 	dialer              N.Dialer
 	reservedForEndpoint map[M.Socksaddr][3]uint8
 	connAccess          sync.Mutex
@@ -28,9 +30,10 @@ type ClientBind struct {
 	reserved            [3]uint8
 }
 
-func NewClientBind(ctx context.Context, dialer N.Dialer, isConnect bool, connectAddr M.Socksaddr, reserved [3]uint8) *ClientBind {
+func NewClientBind(ctx context.Context, errorHandler E.Handler, dialer N.Dialer, isConnect bool, connectAddr M.Socksaddr, reserved [3]uint8) *ClientBind {
 	return &ClientBind{
 		ctx:                 ctx,
+		errorHandler:        errorHandler,
 		dialer:              dialer,
 		reservedForEndpoint: make(map[M.Socksaddr][3]uint8),
 		isConnect:           isConnect,
@@ -67,7 +70,7 @@ func (c *ClientBind) connect() (*wireConn, error) {
 	if c.isConnect {
 		udpConn, err := c.dialer.DialContext(c.ctx, N.NetworkUDP, c.connectAddr)
 		if err != nil {
-			return nil, &wireError{err}
+			return nil, err
 		}
 		c.conn = &wireConn{
 			NetPacketConn: &bufio.UnbindPacketConn{
@@ -79,7 +82,7 @@ func (c *ClientBind) connect() (*wireConn, error) {
 	} else {
 		udpConn, err := c.dialer.ListenPacket(c.ctx, M.Socksaddr{Addr: netip.IPv4Unspecified()})
 		if err != nil {
-			return nil, &wireError{err}
+			return nil, err
 		}
 		c.conn = &wireConn{
 			NetPacketConn: bufio.NewPacketConn(udpConn),
@@ -102,7 +105,13 @@ func (c *ClientBind) Open(port uint16) (fns []conn.ReceiveFunc, actualPort uint1
 func (c *ClientBind) receive(b []byte) (n int, ep conn.Endpoint, err error) {
 	udpConn, err := c.connect()
 	if err != nil {
-		err = &wireError{err}
+		select {
+		case <-c.done:
+			return
+		default:
+		}
+		c.errorHandler.NewError(context.Background(), E.Cause(err, "connect to server"))
+		err = nil
 		return
 	}
 	buffer := buf.With(b)
@@ -112,7 +121,8 @@ func (c *ClientBind) receive(b []byte) (n int, ep conn.Endpoint, err error) {
 		select {
 		case <-c.done:
 		default:
-			err = &wireError{err}
+			c.errorHandler.NewError(context.Background(), E.Cause(err, "read packet"))
+			err = nil
 		}
 		return
 	}
