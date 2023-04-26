@@ -109,7 +109,7 @@ func (w *StackDevice) DialContext(ctx context.Context, network string, destinati
 	}
 	switch N.NetworkName(network) {
 	case N.NetworkTCP:
-		conn, err = gonet.DialTCPWithBind(ctx, w.stack, bind, addr, networkProtocol)
+		conn, err = DialTCPWithBind(ctx, w.stack, bind, addr, networkProtocol)
 	case N.NetworkUDP:
 		conn, err = gonet.DialUDP(w.stack, &bind, &addr, networkProtocol)
 	default:
