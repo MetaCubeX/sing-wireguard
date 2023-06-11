@@ -1,7 +1,7 @@
 github.com/google/btree v1.0.1 h1:gK4Kx5IaGY9CD5sPJ36FHiBJ6ZXl0kilRiiCj+jdYp4=
 github.com/google/btree v1.0.1/go.mod h1:xXMiIv4Fb/0kKde4SpL7qlzvu5cMJDRkFDxJfI9uaxA=
-github.com/metacubex/gvisor v0.0.0-20230304153416-e2bb9c726005 h1:0TEvReK/D6YLszjGj/bdx4d7amQSjQ2X/98r4ZiUbxU=
-github.com/metacubex/gvisor v0.0.0-20230304153416-e2bb9c726005/go.mod h1:wqEuzdImyqD2MCGE8CYRJXbB77oSEJeoSSXXdwKjnsE=
+github.com/metacubex/gvisor v0.0.0-20230611153922-78842f086475 h1:qSEOvPPaMrWggFyFhFYGyMR8i1HKyhXjdi1QYUAa2ww=
+github.com/metacubex/gvisor v0.0.0-20230611153922-78842f086475/go.mod h1:wehEpqiogdeyncfhckJP5gD2LtBgJW0wnDC24mJ+8Jg=
 github.com/sagernet/sing v0.2.4-0.20230420044236-72471d9b35b5 h1:UtihSORXefZYQrGIssu65bP18VEgMGCNHdy60VHc14M=
 github.com/sagernet/sing v0.2.4-0.20230420044236-72471d9b35b5/go.mod h1:Ta8nHnDLAwqySzKhGoKk4ZIB+vJ3GTKj7UPrWYvM+4w=
 github.com/sagernet/wireguard-go v0.0.0-20230420044414-a7bac1754e77 h1:g6QtRWQ2dKX7EQP++1JLNtw4C2TNxd4/ov8YUpOPOSo=

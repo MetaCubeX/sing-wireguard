@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"time"
 
 	M "github.com/sagernet/sing/common/metadata"
@@ -62,7 +63,7 @@ func DialTCPWithBind(ctx context.Context, s *stack.Stack, localAddr, remoteAddr 
 		return nil, &net.OpError{
 			Op:   "connect",
 			Net:  "tcp",
-			Addr: M.SocksaddrFrom(M.AddrFromIP(net.IP(remoteAddr.Addr)), remoteAddr.Port).TCPAddr(),
+			Addr: M.SocksaddrFromNetIP(netip.AddrPortFrom(AddrFromAddress(remoteAddr.Addr), remoteAddr.Port)).TCPAddr(),
 			Err:  errors.New(err.String()),
 		}
 	}
@@ -75,4 +76,20 @@ func DialTCPWithBind(ctx context.Context, s *stack.Stack, localAddr, remoteAddr 
 	ep.SetSockOpt(&keepAliveInterval)
 
 	return gonet.NewTCPConn(&wq, ep), nil
+}
+
+func AddressFromAddr(destination netip.Addr) tcpip.Address {
+	if destination.Is6() {
+		return tcpip.AddrFrom16(destination.As16())
+	} else {
+		return tcpip.AddrFrom4(destination.As4())
+	}
+}
+
+func AddrFromAddress(address tcpip.Address) netip.Addr {
+	if address.Len() == 16 {
+		return netip.AddrFrom16(address.As16())
+	} else {
+		return netip.AddrFrom4(address.As4())
+	}
 }

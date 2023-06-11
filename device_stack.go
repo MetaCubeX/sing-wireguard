@@ -13,7 +13,7 @@ import (
 	N "github.com/sagernet/sing/common/network"
 	wgTun "github.com/sagernet/wireguard-go/tun"
 
-	"github.com/metacubex/gvisor/pkg/bufferv2"
+	"github.com/metacubex/gvisor/pkg/buffer"
 	"github.com/metacubex/gvisor/pkg/tcpip"
 	"github.com/metacubex/gvisor/pkg/tcpip/adapters/gonet"
 	"github.com/metacubex/gvisor/pkg/tcpip/header"
@@ -58,7 +58,7 @@ func NewStackDevice(localAddresses []netip.Prefix, mtu uint32) (*StackDevice, er
 		return nil, E.New(err.String())
 	}
 	for _, prefix := range localAddresses {
-		addr := tcpip.Address(prefix.Addr().AsSlice())
+		addr := AddressFromAddr(prefix.Addr())
 		protoAddr := tcpip.ProtocolAddress{
 			AddressWithPrefix: tcpip.AddressWithPrefix{
 				Address:   addr,
@@ -94,7 +94,7 @@ func (w *StackDevice) DialContext(ctx context.Context, network string, destinati
 	addr := tcpip.FullAddress{
 		NIC:  defaultNIC,
 		Port: destination.Port,
-		Addr: tcpip.Address(destination.Addr.AsSlice()),
+		Addr: AddressFromAddr(destination.Addr),
 	}
 	bind := tcpip.FullAddress{
 		NIC: defaultNIC,
@@ -126,7 +126,7 @@ func (w *StackDevice) ListenPacket(ctx context.Context, destination M.Socksaddr)
 		NIC: defaultNIC,
 	}
 	var networkProtocol tcpip.NetworkProtocolNumber
-	if destination.IsIPv4() || w.addr6 == "" {
+	if destination.IsIPv4() {
 		networkProtocol = header.IPv4ProtocolNumber
 		bind.Addr = w.addr4
 	} else {
@@ -141,11 +141,11 @@ func (w *StackDevice) ListenPacket(ctx context.Context, destination M.Socksaddr)
 }
 
 func (w *StackDevice) Inet4Address() netip.Addr {
-	return M.AddrFromIP(net.IP(w.addr4))
+	return AddrFromAddress(w.addr4)
 }
 
 func (w *StackDevice) Inet6Address() netip.Addr {
-	return M.AddrFromIP(net.IP(w.addr6))
+	return AddrFromAddress(w.addr6)
 }
 
 func (w *StackDevice) Start() error {
@@ -192,7 +192,7 @@ func (w *StackDevice) Write(bufs [][]byte, offset int) (count int, err error) {
 			networkProtocol = header.IPv6ProtocolNumber
 		}
 		packetBuffer := stack.NewPacketBuffer(stack.PacketBufferOptions{
-			Payload: bufferv2.MakeWithData(b),
+			Payload: buffer.MakeWithData(b),
 		})
 		w.dispatcher.DeliverNetworkPacket(networkProtocol, packetBuffer)
 		packetBuffer.DecRef()
