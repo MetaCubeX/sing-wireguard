@@ -72,11 +72,8 @@ func (c *ClientBind) connect() (*wireConn, error) {
 			return nil, err
 		}
 		c.conn = &wireConn{
-			PacketConn: &bufio.UnbindPacketConn{
-				ExtendedConn: bufio.NewExtendedConn(udpConn),
-				Addr:         c.connectAddr,
-			},
-			done: make(chan struct{}),
+			PacketConn: bufio.NewUnbindPacketConnWithAddr(udpConn, c.connectAddr),
+			done:       make(chan struct{}),
 		}
 	} else {
 		udpConn, err := c.dialer.ListenPacket(c.ctx, M.Socksaddr{Addr: netip.IPv4Unspecified()})
