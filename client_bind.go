@@ -145,7 +145,6 @@ func (c *ClientBind) Close() error {
 	}
 	select {
 	case <-c.done:
-		return net.ErrClosed
 	default:
 		close(c.done)
 	}
