@@ -202,7 +202,14 @@ func (c *ClientBind) BatchSize() int {
 }
 
 func (c *ClientBind) SetConnectAddr(connectAddr netip.AddrPort) {
-	c.connectAddr = connectAddr
+	c.connAccess.Lock()
+	defer c.connAccess.Unlock()
+	if connectAddr != c.connectAddr {
+		c.connectAddr = connectAddr
+		if c.isConnect {
+			_ = common.Close(common.PtrOrNil(c.conn))
+		}
+	}
 }
 
 func (c *ClientBind) SetReservedForEndpoint(destination netip.AddrPort, reserved [3]byte) {
