@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"sync"
 
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
@@ -35,6 +36,7 @@ type StackDevice struct {
 	events     chan wgTun.Event
 	outbound   chan *stack.PacketBuffer
 	done       chan struct{}
+	closeOnce  sync.Once
 	dispatcher stack.NetworkDispatcher
 	addr4      tcpip.Address
 	addr6      tcpip.Address
@@ -218,17 +220,15 @@ func (w *StackDevice) Events() <-chan wgTun.Event {
 }
 
 func (w *StackDevice) Close() error {
-	select {
-	case <-w.done:
-		return os.ErrClosed
-	default:
-	}
-	w.stack.Close()
-	for _, endpoint := range w.stack.CleanupEndpoints() {
-		endpoint.Abort()
-	}
-	w.stack.Wait()
-	close(w.done)
+	w.closeOnce.Do(func() {
+		close(w.done)
+		close(w.events)
+		w.stack.Close()
+		for _, endpoint := range w.stack.CleanupEndpoints() {
+			endpoint.Abort()
+		}
+		w.stack.Wait()
+	})
 	return nil
 }
 
