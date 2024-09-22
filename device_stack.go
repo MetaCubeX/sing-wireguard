@@ -9,10 +9,10 @@ import (
 	"os"
 	"sync"
 
+	wgTun "github.com/metacubex/wireguard-go/tun"
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
-	wgTun "github.com/sagernet/wireguard-go/tun"
 
 	"github.com/metacubex/gvisor/pkg/buffer"
 	"github.com/metacubex/gvisor/pkg/tcpip"

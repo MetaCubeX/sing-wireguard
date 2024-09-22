@@ -1,11 +1,11 @@
 module github.com/metacubex/sing-wireguard
 
-go 1.19
+go 1.20
 
 require (
 	github.com/metacubex/gvisor v0.0.0-20240320004321-933faba989ec
-	github.com/sagernet/sing v0.2.19-0.20231207034108-445cd4f41e3f
-	github.com/sagernet/wireguard-go v0.0.0-20231209092712-9a439356a62e
+	github.com/metacubex/wireguard-go v0.0.0-20240922131502-c182e7471181
+	github.com/sagernet/sing v0.2.18
 )
 
 require (
