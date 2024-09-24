@@ -29,6 +29,7 @@ type ClientBind struct {
 	isConnect           bool
 	connectAddr         netip.AddrPort
 	reserved            [3]uint8
+	parseReserved       bool
 }
 
 func NewClientBind(ctx context.Context, errorHandler E.Handler, dialer N.Dialer, isConnect bool, connectAddr netip.AddrPort, reserved [3]uint8) *ClientBind {
@@ -41,6 +42,7 @@ func NewClientBind(ctx context.Context, errorHandler E.Handler, dialer N.Dialer,
 		isConnect:           isConnect,
 		connectAddr:         connectAddr,
 		reserved:            reserved,
+		parseReserved:       true,
 	}
 }
 
@@ -128,7 +130,7 @@ func (c *ClientBind) receive(packets [][]byte, sizes []int, eps []conn.Endpoint)
 		return
 	}
 	sizes[0] = n
-	if n > 3 {
+	if n > 3 && c.parseReserved {
 		b := packets[0]
 		b[1] = 0
 		b[2] = 0
@@ -167,7 +169,7 @@ func (c *ClientBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	}
 	destination := netip.AddrPort(ep.(Endpoint))
 	for _, b := range bufs {
-		if len(b) > 3 {
+		if len(b) > 3 && c.parseReserved {
 			reserved, loaded := c.reservedForEndpoint[destination]
 			if !loaded {
 				reserved = c.reserved
@@ -214,6 +216,10 @@ func (c *ClientBind) SetReservedForEndpoint(destination netip.AddrPort, reserved
 
 func (c *ClientBind) ResetReservedForEndpoint() {
 	c.reservedForEndpoint = make(map[netip.AddrPort][3]uint8)
+}
+
+func (c *ClientBind) SetParseReserved(parseReserved bool) {
+	c.parseReserved = parseReserved
 }
 
 type wireConn struct {
