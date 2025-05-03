@@ -5,7 +5,7 @@ package wireguard
 import (
 	"net/netip"
 
-	E "github.com/sagernet/sing/common/exceptions"
+	E "github.com/metacubex/sing/common/exceptions"
 )
 
 var ErrGVisorNotIncluded = E.New(`gVisor is not included in this build, rebuild with -tags with_gvisor`)

@@ -10,7 +10,7 @@ import (
 	"net/netip"
 	"time"
 
-	M "github.com/sagernet/sing/common/metadata"
+	M "github.com/metacubex/sing/common/metadata"
 
 	"github.com/metacubex/gvisor/pkg/tcpip"
 	"github.com/metacubex/gvisor/pkg/tcpip/adapters/gonet"

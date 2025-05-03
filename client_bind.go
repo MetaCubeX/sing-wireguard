@@ -6,12 +6,12 @@ import (
 	"net/netip"
 	"sync"
 
+	"github.com/metacubex/sing/common"
+	"github.com/metacubex/sing/common/bufio"
+	E "github.com/metacubex/sing/common/exceptions"
+	M "github.com/metacubex/sing/common/metadata"
+	N "github.com/metacubex/sing/common/network"
 	"github.com/metacubex/wireguard-go/conn"
-	"github.com/sagernet/sing/common"
-	"github.com/sagernet/sing/common/bufio"
-	E "github.com/sagernet/sing/common/exceptions"
-	M "github.com/sagernet/sing/common/metadata"
-	N "github.com/sagernet/sing/common/network"
 )
 
 var _ conn.Bind = (*ClientBind)(nil)

@@ -3,8 +3,8 @@ package wireguard
 import (
 	"net/netip"
 
+	N "github.com/metacubex/sing/common/network"
 	"github.com/metacubex/wireguard-go/tun"
-	N "github.com/sagernet/sing/common/network"
 )
 
 type Device interface {
