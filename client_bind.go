@@ -47,15 +47,6 @@ func NewClientBind(ctx context.Context, errorHandler E.Handler, dialer N.Dialer,
 }
 
 func (c *ClientBind) connect() (*wireConn, error) {
-	serverConn := c.conn
-	if serverConn != nil {
-		select {
-		case <-serverConn.done:
-			serverConn = nil
-		default:
-			return serverConn, nil
-		}
-	}
 	c.connAccess.Lock()
 	defer c.connAccess.Unlock()
 	select {
@@ -63,7 +54,7 @@ func (c *ClientBind) connect() (*wireConn, error) {
 		return nil, net.ErrClosed
 	default:
 	}
-	serverConn = c.conn
+	serverConn := c.conn
 	if serverConn != nil {
 		select {
 		case <-serverConn.done:
