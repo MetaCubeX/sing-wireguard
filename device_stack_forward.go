@@ -4,14 +4,22 @@ package wireguard
 
 import (
 	"context"
+	"math"
 	"net/netip"
+	"os"
+	"sync"
 	"time"
 
-	"github.com/metacubex/sing/common/bufio"
+	"github.com/metacubex/sing/common/buf"
+	E "github.com/metacubex/sing/common/exceptions"
 	M "github.com/metacubex/sing/common/metadata"
+	N "github.com/metacubex/sing/common/network"
 
+	"github.com/metacubex/gvisor/pkg/buffer"
 	"github.com/metacubex/gvisor/pkg/tcpip"
 	"github.com/metacubex/gvisor/pkg/tcpip/adapters/gonet"
+	"github.com/metacubex/gvisor/pkg/tcpip/checksum"
+	"github.com/metacubex/gvisor/pkg/tcpip/header"
 	"github.com/metacubex/gvisor/pkg/tcpip/stack"
 	"github.com/metacubex/gvisor/pkg/tcpip/transport/tcp"
 	"github.com/metacubex/gvisor/pkg/tcpip/transport/udp"
@@ -20,15 +28,16 @@ import (
 
 type stackForwarder struct {
 	ctx     context.Context
+	stack   *stack.Stack
 	handler ForwardHandler
 }
 
 func registerForwardHandler(ctx context.Context, ipStack *stack.Stack, handler ForwardHandler) {
-	s := &stackForwarder{ctx: ctx, handler: handler}
+	s := &stackForwarder{ctx: ctx, stack: ipStack, handler: handler}
 	ipStack.SetSpoofing(defaultNIC, true)        // allow sending any SrcIP
 	ipStack.SetPromiscuousMode(defaultNIC, true) // allow receiving any DstIP
 	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcp.NewForwarder(ipStack, 0, 1024, s.tcpForward).HandlePacket)
-	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, udp.NewForwarder(ipStack, s.udpForward).HandlePacket)
+	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, s.udpForward)
 }
 
 func (w *stackForwarder) tcpForward(r *tcp.ForwarderRequest) {
@@ -71,33 +80,103 @@ func (w *stackForwarder) tcpForward(r *tcp.ForwarderRequest) {
 	}()
 }
 
-func (w *stackForwarder) udpForward(r *udp.ForwarderRequest) bool {
-	var wq waiter.Queue
-	handshakeCtx, cancel := context.WithCancel(context.Background())
-	go func() {
-		select {
-		case <-w.ctx.Done():
-			wq.Notify(wq.Events())
-		case <-handshakeCtx.Done():
-		}
-	}()
-	endpoint, err := r.CreateEndpoint(&wq)
-	cancel()
-	if err != nil {
-		return false
+func (w *stackForwarder) udpForward(id stack.TransportEndpointID, pkt *stack.PacketBuffer) bool {
+	var upstreamMetadata M.Metadata
+	upstreamMetadata.Source = M.SocksaddrFrom(AddrFromAddress(id.RemoteAddress), id.RemotePort)
+	upstreamMetadata.Destination = M.SocksaddrFrom(AddrFromAddress(id.LocalAddress), id.LocalPort)
+	proto := header.IPv6ProtocolNumber
+	if upstreamMetadata.Source.IsIPv4() {
+		proto = header.IPv4ProtocolNumber
 	}
-	sess := r.ID()
-	srcAddr := netip.AddrPortFrom(AddrFromAddress(sess.RemoteAddress), sess.RemotePort)
-	dstAddr := netip.AddrPortFrom(AddrFromAddress(sess.LocalAddress), sess.LocalPort)
-	udpConn := gonet.NewUDPConn(&wq, endpoint)
-	go func() {
-		var metadata M.Metadata
-		metadata.Source = M.SocksaddrFromNetIP(srcAddr)
-		metadata.Destination = M.SocksaddrFromNetIP(dstAddr)
-		hErr := w.handler.NewPacketConnection(w.ctx, bufio.NewPacketConn(udpConn), metadata)
-		if hErr != nil {
-			endpoint.Abort()
-		}
-	}()
+	gBuffer := pkt.Data().ToBuffer()
+	sBuffer := buf.NewSize(int(gBuffer.Size()))
+	gBuffer.Apply(func(view *buffer.View) {
+		sBuffer.Write(view.AsSlice())
+	})
+	w.handler.NewPacket(
+		w.ctx,
+		upstreamMetadata.Source.AddrPort(),
+		sBuffer,
+		upstreamMetadata,
+		func(natConn N.PacketConn) N.PacketWriter {
+			return &UDPBackWriter{
+				stack:         w.stack,
+				source:        id.RemoteAddress,
+				sourcePort:    id.RemotePort,
+				sourceNetwork: proto,
+			}
+		},
+	)
 	return true
+}
+
+type UDPBackWriter struct {
+	access        sync.Mutex
+	stack         *stack.Stack
+	source        tcpip.Address
+	sourcePort    uint16
+	sourceNetwork tcpip.NetworkProtocolNumber
+}
+
+func (w *UDPBackWriter) WritePacket(packetBuffer *buf.Buffer, destination M.Socksaddr) error {
+	if !destination.IsIP() {
+		return E.Cause(os.ErrInvalid, "invalid destination")
+	} else if destination.IsIPv4() && w.sourceNetwork == header.IPv6ProtocolNumber {
+		destination = M.SocksaddrFrom(netip.AddrFrom16(destination.Addr.As16()), destination.Port)
+	} else if destination.IsIPv6() && (w.sourceNetwork == header.IPv4ProtocolNumber) {
+		return E.New("send IPv6 packet to IPv4 connection")
+	}
+
+	defer packetBuffer.Release()
+
+	route, err := w.stack.FindRoute(
+		defaultNIC,
+		AddressFromAddr(destination.Addr),
+		w.source,
+		w.sourceNetwork,
+		false,
+	)
+	if err != nil {
+		return gonet.TranslateNetstackError(err)
+	}
+	defer route.Release()
+
+	packet := stack.NewPacketBuffer(stack.PacketBufferOptions{
+		ReserveHeaderBytes: header.UDPMinimumSize + int(route.MaxHeaderLength()),
+		Payload:            buffer.MakeWithData(packetBuffer.Bytes()),
+	})
+	defer packet.DecRef()
+
+	packet.TransportProtocolNumber = header.UDPProtocolNumber
+	udpHdr := header.UDP(packet.TransportHeader().Push(header.UDPMinimumSize))
+	pLen := uint16(packet.Size())
+	udpHdr.Encode(&header.UDPFields{
+		SrcPort: destination.Port,
+		DstPort: w.sourcePort,
+		Length:  pLen,
+	})
+
+	if route.RequiresTXTransportChecksum() && w.sourceNetwork == header.IPv6ProtocolNumber {
+		xsum := udpHdr.CalculateChecksum(checksum.Combine(
+			route.PseudoHeaderChecksum(header.UDPProtocolNumber, pLen),
+			packet.Data().Checksum(),
+		))
+		if xsum != math.MaxUint16 {
+			xsum = ^xsum
+		}
+		udpHdr.SetChecksum(xsum)
+	}
+
+	err = route.WritePacket(stack.NetworkHeaderParams{
+		Protocol: header.UDPProtocolNumber,
+		TTL:      route.DefaultTTL(),
+		TOS:      0,
+	}, packet)
+	if err != nil {
+		route.Stats().UDP.PacketSendErrors.Increment()
+		return gonet.TranslateNetstackError(err)
+	}
+
+	route.Stats().UDP.PacketsSent.Increment()
+	return nil
 }

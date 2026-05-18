@@ -1,8 +1,11 @@
 package wireguard
 
 import (
+	"context"
 	"net/netip"
 
+	"github.com/metacubex/sing/common/buf"
+	M "github.com/metacubex/sing/common/metadata"
 	N "github.com/metacubex/sing/common/network"
 	"github.com/metacubex/wireguard-go/tun"
 )
@@ -18,5 +21,9 @@ type Device interface {
 
 type ForwardHandler interface {
 	N.TCPConnectionHandler
-	N.UDPConnectionHandler
+	PacketForwardHandler
+}
+
+type PacketForwardHandler interface {
+	NewPacket(ctx context.Context, key netip.AddrPort, buffer *buf.Buffer, metadata M.Metadata, init func(natConn N.PacketConn) N.PacketWriter)
 }
