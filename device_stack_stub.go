@@ -10,6 +10,6 @@ import (
 
 var ErrGVisorNotIncluded = E.New(`gVisor is not included in this build, rebuild with -tags with_gvisor`)
 
-func NewStackDevice(localAddresses []netip.Prefix, mtu uint32) (Device, error) {
+func NewStackDevice(localAddresses []netip.Prefix, mtu uint32, forwardHandler ForwardHandler) (Device, error) {
 	return nil, ErrGVisorNotIncluded
 }

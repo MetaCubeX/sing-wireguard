@@ -15,3 +15,8 @@ type Device interface {
 	Inet6Address() netip.Addr
 	// NewEndpoint() (stack.LinkEndpoint, error)
 }
+
+type ForwardHandler interface {
+	N.TCPConnectionHandler
+	N.UDPConnectionHandler
+}

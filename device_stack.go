@@ -35,25 +35,28 @@ type StackDevice struct {
 	mtu        uint32
 	events     chan wgTun.Event
 	outbound   chan *stack.PacketBuffer
-	done       chan struct{}
+	ctx        context.Context
+	ctxCancel  context.CancelFunc
 	closeOnce  sync.Once
 	dispatcher stack.NetworkDispatcher
 	addr4      tcpip.Address
 	addr6      tcpip.Address
 }
 
-func NewStackDevice(localAddresses []netip.Prefix, mtu uint32) (*StackDevice, error) {
+func NewStackDevice(localAddresses []netip.Prefix, mtu uint32, forwardHandler ForwardHandler) (*StackDevice, error) {
 	ipStack := stack.New(stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol4, icmp.NewProtocol6},
 		HandleLocal:        true,
 	})
+	ctx, cancel := context.WithCancel(context.Background())
 	tunDevice := &StackDevice{
-		stack:    ipStack,
-		mtu:      mtu,
-		events:   make(chan wgTun.Event, 1),
-		outbound: make(chan *stack.PacketBuffer, 256),
-		done:     make(chan struct{}),
+		stack:     ipStack,
+		mtu:       mtu,
+		events:    make(chan wgTun.Event, 1),
+		outbound:  make(chan *stack.PacketBuffer, 256),
+		ctx:       ctx,
+		ctxCancel: cancel,
 	}
 	err := ipStack.CreateNIC(defaultNIC, (*wireEndpoint)(tunDevice))
 	if err != nil {
@@ -85,6 +88,9 @@ func NewStackDevice(localAddresses []netip.Prefix, mtu uint32) (*StackDevice, er
 	ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &cOpt)
 	ipStack.AddRoute(tcpip.Route{Destination: header.IPv4EmptySubnet, NIC: defaultNIC})
 	ipStack.AddRoute(tcpip.Route{Destination: header.IPv6EmptySubnet, NIC: defaultNIC})
+	if forwardHandler != nil {
+		registerForwardHandler(ctx, ipStack, forwardHandler)
+	}
 	return tunDevice, nil
 }
 
@@ -175,7 +181,7 @@ func (w *StackDevice) Read(bufs [][]byte, sizes []int, offset int) (count int, e
 		sizes[0] = n
 		count = 1
 		return
-	case <-w.done:
+	case <-w.ctx.Done():
 		return 0, os.ErrClosed
 	}
 }
@@ -221,7 +227,7 @@ func (w *StackDevice) Events() <-chan wgTun.Event {
 
 func (w *StackDevice) Close() error {
 	w.closeOnce.Do(func() {
-		close(w.done)
+		w.ctxCancel()
 		close(w.events)
 		w.stack.Close()
 		for _, endpoint := range w.stack.CleanupEndpoints() {
@@ -288,7 +294,7 @@ func (ep *wireEndpoint) WritePackets(list stack.PacketBufferList) (int, tcpip.Er
 	for _, packetBuffer := range list.AsSlice() {
 		packetBuffer.IncRef()
 		select {
-		case <-ep.done:
+		case <-ep.ctx.Done():
 			return 0, &tcpip.ErrClosedForSend{}
 		case ep.outbound <- packetBuffer:
 		}
