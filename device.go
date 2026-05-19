@@ -16,6 +16,7 @@ type Device interface {
 	Start() error
 	Inet4Address() netip.Addr
 	Inet6Address() netip.Addr
+	RegisterForward(options ForwardOptions) error
 	// NewEndpoint() (stack.LinkEndpoint, error)
 }
 
@@ -26,4 +27,8 @@ type ForwardHandler interface {
 
 type PacketForwardHandler interface {
 	NewPacket(ctx context.Context, key netip.AddrPort, buffer *buf.Buffer, metadata M.Metadata, init func(natConn N.PacketConn) N.PacketWriter)
+}
+
+type ForwardOptions struct {
+	Handler ForwardHandler
 }

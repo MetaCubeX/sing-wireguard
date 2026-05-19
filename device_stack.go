@@ -43,7 +43,7 @@ type StackDevice struct {
 	addr6      tcpip.Address
 }
 
-func NewStackDevice(localAddresses []netip.Prefix, mtu uint32, forwardHandler ForwardHandler) (*StackDevice, error) {
+func NewStackDevice(localAddresses []netip.Prefix, mtu uint32) (*StackDevice, error) {
 	ipStack := stack.New(stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol4, icmp.NewProtocol6},
@@ -88,9 +88,6 @@ func NewStackDevice(localAddresses []netip.Prefix, mtu uint32, forwardHandler Fo
 	ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &cOpt)
 	ipStack.AddRoute(tcpip.Route{Destination: header.IPv4EmptySubnet, NIC: defaultNIC})
 	ipStack.AddRoute(tcpip.Route{Destination: header.IPv6EmptySubnet, NIC: defaultNIC})
-	if forwardHandler != nil {
-		registerForwardHandler(ctx, ipStack, forwardHandler)
-	}
 	return tunDevice, nil
 }
 

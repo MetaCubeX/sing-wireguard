@@ -32,12 +32,16 @@ type stackForwarder struct {
 	handler ForwardHandler
 }
 
-func registerForwardHandler(ctx context.Context, ipStack *stack.Stack, handler ForwardHandler) {
+func (w *StackDevice) RegisterForward(options ForwardOptions) error {
+	ctx := w.ctx
+	ipStack := w.stack
+	handler := options.Handler
 	s := &stackForwarder{ctx: ctx, stack: ipStack, handler: handler}
 	ipStack.SetSpoofing(defaultNIC, true)        // allow sending any SrcIP
 	ipStack.SetPromiscuousMode(defaultNIC, true) // allow receiving any DstIP
 	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcp.NewForwarder(ipStack, 0, 1024, s.tcpForward).HandlePacket)
 	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, s.udpForward)
+	return nil
 }
 
 func (w *stackForwarder) tcpForward(r *tcp.ForwarderRequest) {
@@ -99,7 +103,7 @@ func (w *stackForwarder) udpForward(id stack.TransportEndpointID, pkt *stack.Pac
 		sBuffer,
 		upstreamMetadata,
 		func(natConn N.PacketConn) N.PacketWriter {
-			return &UDPBackWriter{
+			return &udpBackWriter{
 				stack:         w.stack,
 				source:        id.RemoteAddress,
 				sourcePort:    id.RemotePort,
@@ -110,7 +114,7 @@ func (w *stackForwarder) udpForward(id stack.TransportEndpointID, pkt *stack.Pac
 	return true
 }
 
-type UDPBackWriter struct {
+type udpBackWriter struct {
 	access        sync.Mutex
 	stack         *stack.Stack
 	source        tcpip.Address
@@ -118,7 +122,7 @@ type UDPBackWriter struct {
 	sourceNetwork tcpip.NetworkProtocolNumber
 }
 
-func (w *UDPBackWriter) WritePacket(packetBuffer *buf.Buffer, destination M.Socksaddr) error {
+func (w *udpBackWriter) WritePacket(packetBuffer *buf.Buffer, destination M.Socksaddr) error {
 	if !destination.IsIP() {
 		return E.Cause(os.ErrInvalid, "invalid destination")
 	} else if destination.IsIPv4() && w.sourceNetwork == header.IPv6ProtocolNumber {
