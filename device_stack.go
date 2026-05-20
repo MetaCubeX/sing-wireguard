@@ -31,13 +31,18 @@ var _ Device = (*StackDevice)(nil)
 const defaultNIC tcpip.NICID = 1
 
 type StackDevice struct {
-	stack      *stack.Stack
-	mtu        uint32
-	events     chan wgTun.Event
-	outbound   chan *stack.PacketBuffer
-	ctx        context.Context
-	ctxCancel  context.CancelFunc
-	closeOnce  sync.Once
+	stack     *stack.Stack
+	mtu       uint32
+	events    chan wgTun.Event
+	outbound  chan *stack.PacketBuffer
+	ctx       context.Context
+	ctxCancel context.CancelFunc
+	closeOnce sync.Once
+	// writeMu serializes Write against the stack teardown performed by Close.
+	// Write holds it for reading (concurrent writes are fine), Close holds it
+	// for writing around stack.Close() so an in-flight Write can never observe
+	// a detached (nil) dispatcher. See Write/Close for details.
+	writeMu    sync.RWMutex
 	dispatcher stack.NetworkDispatcher
 	addr4      tcpip.Address
 	addr6      tcpip.Address
@@ -184,6 +189,18 @@ func (w *StackDevice) Read(bufs [][]byte, sizes []int, offset int) (count int, e
 }
 
 func (w *StackDevice) Write(bufs [][]byte, offset int) (count int, err error) {
+	// wireguard-go's RoutineSequentialReceiver may still call Write with an
+	// in-flight decrypted packet after Close has been invoked. Close cancels
+	// the context before tearing down the stack, and stack.Close() detaches
+	// the link endpoint (Attach(nil)), so an unguarded Write would dereference
+	// a nil dispatcher and crash. The RLock pairs with Close's Lock so the
+	// teardown waits for in-flight writes, and the ctx check rejects writes
+	// that arrive once the device is closed.
+	w.writeMu.RLock()
+	defer w.writeMu.RUnlock()
+	if w.ctx.Err() != nil {
+		return 0, os.ErrClosed
+	}
 	for _, b := range bufs {
 		b = b[offset:]
 		if len(b) == 0 {
@@ -226,7 +243,13 @@ func (w *StackDevice) Close() error {
 	w.closeOnce.Do(func() {
 		w.ctxCancel()
 		close(w.events)
+		// Take the write lock so stack.Close() (which detaches the link
+		// endpoint and nils the dispatcher) cannot run while a Write is
+		// mid-flight. New writes arriving after ctxCancel observe the
+		// cancelled context and bail out before touching the dispatcher.
+		w.writeMu.Lock()
 		w.stack.Close()
+		w.writeMu.Unlock()
 		for _, endpoint := range w.stack.CleanupEndpoints() {
 			endpoint.Abort()
 		}
