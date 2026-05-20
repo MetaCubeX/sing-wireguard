@@ -38,6 +38,7 @@ type StackDevice struct {
 	ctx        context.Context
 	ctxCancel  context.CancelFunc
 	closeOnce  sync.Once
+	mu         sync.RWMutex // mu guards dispatcher
 	dispatcher stack.NetworkDispatcher
 	addr4      tcpip.Address
 	addr6      tcpip.Address
@@ -189,6 +190,13 @@ func (w *StackDevice) Write(bufs [][]byte, offset int) (count int, err error) {
 		if len(b) == 0 {
 			continue
 		}
+		w.mu.RLock()
+		dispatcher := w.dispatcher
+		w.mu.RUnlock()
+		if dispatcher == nil {
+			err = os.ErrClosed
+			return
+		}
 		var networkProtocol tcpip.NetworkProtocolNumber
 		switch header.IPVersion(b) {
 		case header.IPv4Version:
@@ -199,7 +207,7 @@ func (w *StackDevice) Write(bufs [][]byte, offset int) (count int, err error) {
 		packetBuffer := stack.NewPacketBuffer(stack.PacketBufferOptions{
 			Payload: buffer.MakeWithData(b),
 		})
-		w.dispatcher.DeliverNetworkPacket(networkProtocol, packetBuffer)
+		dispatcher.DeliverNetworkPacket(networkProtocol, packetBuffer)
 		packetBuffer.DecRef()
 		count++
 	}
@@ -266,10 +274,14 @@ func (ep *wireEndpoint) Capabilities() stack.LinkEndpointCapabilities {
 }
 
 func (ep *wireEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
+	ep.mu.Lock()
+	defer ep.mu.Unlock()
 	ep.dispatcher = dispatcher
 }
 
 func (ep *wireEndpoint) IsAttached() bool {
+	ep.mu.RLock()
+	defer ep.mu.RUnlock()
 	return ep.dispatcher != nil
 }
 
