@@ -22,8 +22,11 @@ type Device interface {
 	LocalAddresses() []netip.Addr
 	Inet4Address() netip.Addr
 	Inet6Address() netip.Addr
-	RegisterForward(options ForwardOptions) error
 	// NewEndpoint() (stack.LinkEndpoint, error)
+}
+
+type RegisterForward interface {
+	RegisterForward(options ForwardOptions) error
 }
 
 type ForwardHandler interface {
