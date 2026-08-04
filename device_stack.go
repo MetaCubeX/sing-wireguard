@@ -31,17 +31,18 @@ var _ Device = (*StackDevice)(nil)
 const defaultNIC tcpip.NICID = 1
 
 type StackDevice struct {
-	stack      *stack.Stack
-	mtu        uint32
-	events     chan wgTun.Event
-	outbound   chan *stack.PacketBuffer
-	ctx        context.Context
-	ctxCancel  context.CancelFunc
-	closeOnce  sync.Once
-	mu         sync.RWMutex // mu guards dispatcher
-	dispatcher stack.NetworkDispatcher
-	addr4      tcpip.Address
-	addr6      tcpip.Address
+	stack          *stack.Stack
+	mtu            uint32
+	events         chan wgTun.Event
+	outbound       chan *stack.PacketBuffer
+	ctx            context.Context
+	ctxCancel      context.CancelFunc
+	closeOnce      sync.Once
+	mu             sync.RWMutex // mu guards dispatcher
+	dispatcher     stack.NetworkDispatcher
+	addr4          tcpip.Address
+	addr6          tcpip.Address
+	localAddresses []netip.Addr
 }
 
 func NewStackDevice(localAddresses []netip.Prefix, mtu uint32) (*StackDevice, error) {
@@ -52,12 +53,13 @@ func NewStackDevice(localAddresses []netip.Prefix, mtu uint32) (*StackDevice, er
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	tunDevice := &StackDevice{
-		stack:     ipStack,
-		mtu:       mtu,
-		events:    make(chan wgTun.Event, 1),
-		outbound:  make(chan *stack.PacketBuffer, 256),
-		ctx:       ctx,
-		ctxCancel: cancel,
+		stack:          ipStack,
+		mtu:            mtu,
+		events:         make(chan wgTun.Event, 1),
+		outbound:       make(chan *stack.PacketBuffer, 256),
+		ctx:            ctx,
+		ctxCancel:      cancel,
+		localAddresses: make([]netip.Addr, 0, len(localAddresses)),
 	}
 	err := ipStack.CreateNIC(defaultNIC, (*wireEndpoint)(tunDevice))
 	if err != nil {
@@ -82,6 +84,7 @@ func NewStackDevice(localAddresses []netip.Prefix, mtu uint32) (*StackDevice, er
 		if err != nil {
 			return nil, E.New("parse local address ", protoAddr.AddressWithPrefix, ": ", err.String())
 		}
+		tunDevice.localAddresses = append(tunDevice.localAddresses, prefix.Addr())
 	}
 	sOpt := tcpip.TCPSACKEnabled(true)
 	ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &sOpt)
@@ -144,6 +147,12 @@ func (w *StackDevice) ListenPacket(ctx context.Context, destination M.Socksaddr)
 		pc = nil // pc maybe non-nil interface containing nil pointer
 	}
 	return
+}
+
+// LocalAddresses returns an independent snapshot of all configured local
+// addresses in configuration order.
+func (w *StackDevice) LocalAddresses() []netip.Addr {
+	return append([]netip.Addr(nil), w.localAddresses...)
 }
 
 func (w *StackDevice) Inet4Address() netip.Addr {

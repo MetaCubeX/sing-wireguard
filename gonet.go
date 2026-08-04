@@ -4,13 +4,9 @@ package wireguard
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"net"
 	"net/netip"
 	"time"
-
-	M "github.com/metacubex/sing/common/metadata"
 
 	"github.com/metacubex/gvisor/pkg/tcpip"
 	"github.com/metacubex/gvisor/pkg/tcpip/adapters/gonet"
@@ -19,13 +15,28 @@ import (
 	"github.com/metacubex/gvisor/pkg/waiter"
 )
 
+// DialTCPWithBind creates a TCP connection after binding the supplied local
+// endpoint. It is retained for compatibility; StackDevice.DialTCP provides
+// standard network-name and netip address semantics.
 func DialTCPWithBind(ctx context.Context, s *stack.Stack, localAddr, remoteAddr tcpip.FullAddress, network tcpip.NetworkProtocolNumber) (*gonet.TCPConn, error) {
+	return dialTCPWithBind(ctx, s, localAddr, remoteAddr, network, false, "tcp")
+}
+
+// dialTCPWithBind creates a TCP endpoint with explicit address-family and
+// IPv6-only semantics.
+func dialTCPWithBind(ctx context.Context, s *stack.Stack, localAddr, remoteAddr tcpip.FullAddress, network tcpip.NetworkProtocolNumber, v6Only bool, networkName string) (_ *gonet.TCPConn, retErr error) {
 	// Create TCP endpoint, then connect.
 	var wq waiter.Queue
 	ep, err := s.NewEndpoint(tcp.ProtocolNumber, network, &wq)
 	if err != nil {
-		return nil, errors.New(err.String())
+		return nil, tcpDialError(networkName, localAddr, remoteAddr, gonet.TranslateNetstackError(err))
 	}
+	defer func() {
+		if retErr != nil {
+			ep.Close()
+		}
+	}()
+	ep.SocketOptions().SetV6Only(v6Only)
 
 	// Create wait queue entry that notifies a channel.
 	//
@@ -36,14 +47,14 @@ func DialTCPWithBind(ctx context.Context, s *stack.Stack, localAddr, remoteAddr 
 
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, tcpDialError(networkName, localAddr, remoteAddr, ctx.Err())
 	default:
 	}
 
 	// Bind before connect if requested.
 	if localAddr != (tcpip.FullAddress{}) {
 		if err = ep.Bind(localAddr); err != nil {
-			return nil, fmt.Errorf("ep.Bind(%+v) = %s", localAddr, err)
+			return nil, tcpDialError(networkName, localAddr, remoteAddr, gonet.TranslateNetstackError(err))
 		}
 	}
 
@@ -51,21 +62,14 @@ func DialTCPWithBind(ctx context.Context, s *stack.Stack, localAddr, remoteAddr 
 	if _, ok := err.(*tcpip.ErrConnectStarted); ok {
 		select {
 		case <-ctx.Done():
-			ep.Close()
-			return nil, ctx.Err()
+			return nil, tcpDialError(networkName, localAddr, remoteAddr, ctx.Err())
 		case <-notifyCh:
 		}
 
 		err = ep.LastError()
 	}
 	if err != nil {
-		ep.Close()
-		return nil, &net.OpError{
-			Op:   "connect",
-			Net:  "tcp",
-			Addr: M.SocksaddrFromNetIP(netip.AddrPortFrom(AddrFromAddress(remoteAddr.Addr), remoteAddr.Port)).TCPAddr(),
-			Err:  errors.New(err.String()),
-		}
+		return nil, tcpDialError(networkName, localAddr, remoteAddr, gonet.TranslateNetstackError(err))
 	}
 
 	// sing-box added: set keepalive
@@ -78,6 +82,33 @@ func DialTCPWithBind(ctx context.Context, s *stack.Stack, localAddr, remoteAddr 
 	return gonet.NewTCPConn(&wq, ep), nil
 }
 
+// tcpDialError returns the standard net.OpError shape for endpoint creation,
+// binding, connection, and cancellation failures.
+func tcpDialError(network string, localAddr, remoteAddr tcpip.FullAddress, err error) error {
+	return &net.OpError{
+		Op:     "dial",
+		Net:    network,
+		Source: tcpAddrFromFullAddress(localAddr),
+		Addr:   tcpAddrFromFullAddress(remoteAddr),
+		Err:    err,
+	}
+}
+
+// tcpAddrFromFullAddress converts a gVisor address without assuming that an
+// optional local address is present.
+func tcpAddrFromFullAddress(address tcpip.FullAddress) net.Addr {
+	if address == (tcpip.FullAddress{}) {
+		return nil
+	}
+	converted := &net.TCPAddr{Port: int(address.Port)}
+	if address.Addr.Len() == 4 || address.Addr.Len() == 16 {
+		ipAddress := AddrFromAddress(address.Addr)
+		converted.IP = ipAddress.AsSlice()
+	}
+	return converted
+}
+
+// AddressFromAddr converts a valid IPv4 or IPv6 address to gVisor form.
 func AddressFromAddr(destination netip.Addr) tcpip.Address {
 	if destination.Is6() {
 		return tcpip.AddrFrom16(destination.As16())
@@ -86,6 +117,7 @@ func AddressFromAddr(destination netip.Addr) tcpip.Address {
 	}
 }
 
+// AddrFromAddress converts a gVisor IPv4 or IPv6 address to netip form.
 func AddrFromAddress(address tcpip.Address) netip.Addr {
 	if address.Len() == 16 {
 		return netip.AddrFrom16(address.As16())
