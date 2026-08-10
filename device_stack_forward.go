@@ -39,6 +39,12 @@ func (w *StackDevice) RegisterForward(options ForwardOptions) error {
 	s := &stackForwarder{ctx: ctx, stack: ipStack, handler: handler}
 	ipStack.SetSpoofing(defaultNIC, true)        // allow sending any SrcIP
 	ipStack.SetPromiscuousMode(defaultNIC, true) // allow receiving any DstIP
+	if ipStack.HandleLocal() {
+		// Promiscuous mode represents every source with a temporary endpoint,
+		// which HandleLocal would reject before transport dispatch. Ignore only
+		// those temporary endpoints; permanent local sources remain rejected.
+		ipStack.SetAllowPromiscuousSource(defaultNIC, true)
+	}
 	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcp.NewForwarder(ipStack, 0, 1024, s.tcpForward).HandlePacket)
 	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, s.udpForward)
 	return nil
