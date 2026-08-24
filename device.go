@@ -29,6 +29,12 @@ type DeviceStack interface {
 	ListenUDP(ctx context.Context, network string, local netip.AddrPort) (net.PacketConn, error)
 }
 
+// IPPacketStack is an optional capability implemented by device stacks that
+// can exchange complete IP packets.
+type IPPacketStack interface {
+	DialIPPacket(ctx context.Context, network string, source, destination netip.Addr) (net.Conn, error)
+}
+
 type RegisterForward interface {
 	RegisterForward(options ForwardOptions) error
 }
