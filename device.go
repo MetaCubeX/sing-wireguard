@@ -27,6 +27,8 @@ type DeviceStack interface {
 	ListenTCP(ctx context.Context, network string, local netip.AddrPort) (net.Listener, error)
 	DialUDP(ctx context.Context, network string, source, destination netip.AddrPort) (net.Conn, error)
 	ListenUDP(ctx context.Context, network string, local netip.AddrPort) (net.PacketConn, error)
+	DialIP(ctx context.Context, network string, source, destination netip.Addr) (net.Conn, error)
+	ListenIP(ctx context.Context, network string, local netip.Addr) (net.PacketConn, error)
 }
 
 type RegisterForward interface {

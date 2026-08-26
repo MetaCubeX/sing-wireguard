@@ -6,6 +6,8 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/metacubex/gvisor/pkg/tcpip"
@@ -162,6 +164,201 @@ func (w *StackDevice) ListenUDP(ctx context.Context, network string, local netip
 		return wrap(gonet.TranslateNetstackError(tcpipErr))
 	}
 	return gonet.NewUDPConn(&waitQueue, endpoint), nil
+}
+
+// DialIP creates a connected IPv4 or IPv6 ICMP protocol socket. Network must
+// be ip4:icmp, ip4:1, ip6:ipv6-icmp, ip6:58, or an equivalent ip form whose
+// address family is unambiguous. Reads return complete IP packets, including
+// their IP headers, and writes must supply complete IP packets.
+func (w *StackDevice) DialIP(ctx context.Context, network string, source, destination netip.Addr) (net.Conn, error) {
+	destination = destination.Unmap()
+	target := ipNetAddr(destination)
+	wrap := func(local net.Addr, err error) (net.Conn, error) {
+		return nil, &net.OpError{Op: "dial", Net: network, Source: local, Addr: target, Err: err}
+	}
+	if !destination.IsValid() || destination.IsUnspecified() || destination.Zone() != "" {
+		return wrap(nil, net.InvalidAddrError("invalid IP destination"))
+	}
+	configuration, err := w.parseIPNetwork(network, destination)
+	if err != nil {
+		return wrap(nil, err)
+	}
+	if err = ctx.Err(); err != nil {
+		return wrap(nil, err)
+	}
+	source = source.Unmap()
+	if err = validateIPSource(source, configuration.v6); err != nil {
+		return wrap(ipNetAddr(source), err)
+	}
+
+	waitQueue := new(waiter.Queue)
+	endpoint, tcpipErr := w.stack.NewRawEndpoint(configuration.transport, configuration.network, waitQueue, true)
+	if tcpipErr != nil {
+		return wrap(ipNetAddr(source), gonet.TranslateNetstackError(tcpipErr))
+	}
+	failed := true
+	defer func() {
+		if failed {
+			endpoint.Close()
+		}
+	}()
+	endpoint.SocketOptions().SetHeaderIncluded(true)
+	if source.IsValid() && !source.IsUnspecified() {
+		if tcpipErr = endpoint.Bind(tcpip.FullAddress{NIC: defaultNIC, Addr: AddressFromAddr(source)}); tcpipErr != nil {
+			return wrap(ipNetAddr(source), gonet.TranslateNetstackError(tcpipErr))
+		}
+	}
+	if tcpipErr = endpoint.Connect(tcpip.FullAddress{NIC: defaultNIC, Addr: AddressFromAddr(destination)}); tcpipErr != nil {
+		return wrap(ipNetAddr(source), gonet.TranslateNetstackError(tcpipErr))
+	}
+	local := source
+	if address, addressErr := endpoint.GetLocalAddress(); addressErr == nil {
+		if selected, valid := netipFromTCPIPAddress(address.Addr); valid {
+			local = selected
+		}
+	}
+	if !local.IsValid() || local.IsUnspecified() {
+		local = w.defaultIPAddress(configuration.v6)
+	}
+	failed = false
+	return newIPConn(endpoint, waitQueue, network, configuration.v6, local, destination), nil
+}
+
+// ListenIP creates an unconnected IPv4 or IPv6 ICMP protocol socket. Reads
+// return complete IP packets, including their IP headers, and writes must
+// supply complete IP packets.
+func (w *StackDevice) ListenIP(ctx context.Context, network string, local netip.Addr) (net.PacketConn, error) {
+	local = local.Unmap()
+	target := ipNetAddr(local)
+	wrap := func(err error) (net.PacketConn, error) {
+		return nil, &net.OpError{Op: "listen", Net: network, Addr: target, Err: err}
+	}
+	configuration, err := w.parseIPNetwork(network, local)
+	if err != nil {
+		return wrap(err)
+	}
+	if local.IsValid() && (local.IsMulticast() || local.Zone() != "") {
+		return wrap(net.InvalidAddrError("invalid IP listen address"))
+	}
+	if err = ctx.Err(); err != nil {
+		return wrap(err)
+	}
+
+	waitQueue := new(waiter.Queue)
+	endpoint, tcpipErr := w.stack.NewRawEndpoint(configuration.transport, configuration.network, waitQueue, true)
+	if tcpipErr != nil {
+		return wrap(gonet.TranslateNetstackError(tcpipErr))
+	}
+	failed := true
+	defer func() {
+		if failed {
+			endpoint.Close()
+		}
+	}()
+	endpoint.SocketOptions().SetHeaderIncluded(true)
+	bindAddress := tcpip.FullAddress{NIC: defaultNIC}
+	if local.IsValid() && !local.IsUnspecified() {
+		bindAddress.Addr = AddressFromAddr(local)
+	}
+	if tcpipErr = endpoint.Bind(bindAddress); tcpipErr != nil {
+		return wrap(gonet.TranslateNetstackError(tcpipErr))
+	}
+	if !local.IsValid() {
+		if configuration.v6 {
+			local = netip.IPv6Unspecified()
+		} else {
+			local = netip.IPv4Unspecified()
+		}
+	}
+	failed = false
+	return newIPConn(endpoint, waitQueue, network, configuration.v6, local, netip.Addr{}), nil
+}
+
+type ipNetworkConfiguration struct {
+	network   tcpip.NetworkProtocolNumber
+	transport tcpip.TransportProtocolNumber
+	v6        bool
+}
+
+func (w *StackDevice) parseIPNetwork(network string, address netip.Addr) (ipNetworkConfiguration, error) {
+	separator := strings.LastIndexByte(network, ':')
+	if separator < 0 {
+		return ipNetworkConfiguration{}, net.UnknownNetworkError(network)
+	}
+	family, protocolName := network[:separator], strings.ToLower(network[separator+1:])
+	var configuration ipNetworkConfiguration
+	switch protocolName {
+	case "icmp":
+		configuration.network = header.IPv4ProtocolNumber
+		configuration.transport = header.ICMPv4ProtocolNumber
+	case "ipv6-icmp":
+		configuration.network = header.IPv6ProtocolNumber
+		configuration.transport = header.ICMPv6ProtocolNumber
+	case "igmp", "tcp", "udp":
+		return ipNetworkConfiguration{}, syscall.EPROTONOSUPPORT
+	default:
+		protocol, err := strconv.ParseUint(protocolName, 10, 8)
+		if err != nil {
+			return ipNetworkConfiguration{}, &net.AddrError{Err: "unknown IP protocol specified", Addr: protocolName}
+		}
+		switch tcpip.TransportProtocolNumber(protocol) {
+		case header.ICMPv4ProtocolNumber:
+			configuration.network = header.IPv4ProtocolNumber
+			configuration.transport = header.ICMPv4ProtocolNumber
+		case header.ICMPv6ProtocolNumber:
+			configuration.network = header.IPv6ProtocolNumber
+			configuration.transport = header.ICMPv6ProtocolNumber
+		default:
+			return ipNetworkConfiguration{}, syscall.EPROTONOSUPPORT
+		}
+	}
+	configuration.v6 = configuration.network == header.IPv6ProtocolNumber
+	switch family {
+	case "ip":
+	case "ip4":
+		if configuration.v6 {
+			return ipNetworkConfiguration{}, syscall.EPROTONOSUPPORT
+		}
+	case "ip6":
+		if !configuration.v6 {
+			return ipNetworkConfiguration{}, syscall.EPROTONOSUPPORT
+		}
+	default:
+		return ipNetworkConfiguration{}, net.UnknownNetworkError(network)
+	}
+	if address.IsValid() && address.Is6() != configuration.v6 {
+		return ipNetworkConfiguration{}, syscall.EAFNOSUPPORT
+	}
+	if configuration.v6 {
+		if w.addr6.Len() == 0 {
+			return ipNetworkConfiguration{}, syscall.EADDRNOTAVAIL
+		}
+	} else if w.addr4.Len() == 0 {
+		return ipNetworkConfiguration{}, syscall.EADDRNOTAVAIL
+	}
+	return configuration, nil
+}
+
+func validateIPSource(source netip.Addr, v6 bool) error {
+	if !source.IsValid() {
+		return nil
+	}
+	if source.Zone() != "" || source.IsMulticast() {
+		return syscall.EINVAL
+	}
+	if source.Is6() != v6 {
+		return syscall.EAFNOSUPPORT
+	}
+	return nil
+}
+
+func (w *StackDevice) defaultIPAddress(v6 bool) netip.Addr {
+	address := w.addr4
+	if v6 {
+		address = w.addr6
+	}
+	converted, _ := netipFromTCPIPAddress(address)
+	return converted
 }
 
 // validateTransportNetwork checks a connected socket's network name and

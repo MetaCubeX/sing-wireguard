@@ -3,7 +3,7 @@ module github.com/metacubex/sing-wireguard
 go 1.20
 
 require (
-	github.com/metacubex/gvisor v0.0.0-20260810011720-3cc44cf9ac22
+	github.com/metacubex/gvisor v0.0.0-20260826100401-79317d808312
 	github.com/metacubex/sing v0.5.7
 	github.com/metacubex/wireguard-go v0.0.0-20250820062549-a6cecdd7f57f
 )

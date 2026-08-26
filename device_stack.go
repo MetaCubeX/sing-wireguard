@@ -22,6 +22,7 @@ import (
 	"github.com/metacubex/gvisor/pkg/tcpip/network/ipv6"
 	"github.com/metacubex/gvisor/pkg/tcpip/stack"
 	"github.com/metacubex/gvisor/pkg/tcpip/transport/icmp"
+	"github.com/metacubex/gvisor/pkg/tcpip/transport/raw"
 	"github.com/metacubex/gvisor/pkg/tcpip/transport/tcp"
 	"github.com/metacubex/gvisor/pkg/tcpip/transport/udp"
 )
@@ -49,6 +50,7 @@ func NewStackDevice(localAddresses []netip.Prefix, mtu uint32) (*StackDevice, er
 	ipStack := stack.New(stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol4, icmp.NewProtocol6},
+		RawFactory:         raw.EndpointFactory{},
 		HandleLocal:        true,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
