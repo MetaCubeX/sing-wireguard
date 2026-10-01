@@ -9,11 +9,14 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/metacubex/gvisor/pkg/tcpip/header"
+	"github.com/metacubex/gvisor/pkg/tcpip/transport"
+	"github.com/metacubex/gvisor/pkg/waiter"
 )
 
 func TestIPConnReadsCompletePackets(t *testing.T) {
@@ -261,6 +264,335 @@ func TestIPConnWriteAndNetworkValidation(t *testing.T) {
 	}
 	if _, err = device.DialIP(context.Background(), "ip4:icmp", netip.Addr{}, netip.MustParseAddr("2001:db8::1")); !errors.Is(err, syscall.EAFNOSUPPORT) {
 		t.Fatalf("DialIP IPv4/IPv6 mismatch = %v, want EAFNOSUPPORT", err)
+	}
+}
+
+const stackCloseTestTimeout = 2 * time.Second
+
+type ipCloseTestCase struct {
+	name    string
+	network string
+	dial    bool
+	local   netip.Addr
+	remote  netip.Addr
+}
+
+func ipCloseTestCases() []ipCloseTestCase {
+	local4, remote4 := netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("10.0.0.2")
+	local6, remote6 := netip.MustParseAddr("fd00::1"), netip.MustParseAddr("fd00::2")
+	return []ipCloseTestCase{
+		{"ListenIP/IPv4", "ip4:icmp", false, local4, remote4},
+		{"ListenIP/IPv6", "ip6:ipv6-icmp", false, local6, remote6},
+		{"DialIP/IPv4", "ip4:icmp", true, local4, remote4},
+		{"DialIP/IPv6", "ip6:ipv6-icmp", true, local6, remote6},
+	}
+}
+
+func (test ipCloseTestCase) open(w *StackDevice) (*gIPConn, error) {
+	if test.dial {
+		conn, err := w.DialIP(context.Background(), test.network, netip.Addr{}, test.remote)
+		if conn == nil {
+			return nil, err
+		}
+		return conn.(*gIPConn), err
+	}
+	conn, err := w.ListenIP(context.Background(), test.network, netip.Addr{})
+	if conn == nil {
+		return nil, err
+	}
+	return conn.(*gIPConn), err
+}
+
+func closeTestStackDevice(t *testing.T, w *StackDevice) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- w.Close() }()
+	awaitStackClose(t, done)
+}
+
+func awaitStackClose(t *testing.T, done <-chan error) {
+	t.Helper()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(stackCloseTestTimeout):
+		t.Fatal("Close blocked")
+	}
+}
+
+func checkNoCleanupEndpoints(t *testing.T, w *StackDevice) {
+	t.Helper()
+	if count := len(w.stack.CleanupEndpoints()); count != 0 {
+		t.Fatalf("retained %d cleanup endpoints", count)
+	}
+}
+
+func checkIPConnClosed(t *testing.T, conn *gIPConn, test ipCloseTestCase) {
+	t.Helper()
+	if state := conn.endpoint.State(); state != uint32(transport.DatagramEndpointStateClosed) {
+		t.Fatalf("raw endpoint state = %d, want closed", state)
+	}
+	if _, _, err := conn.ReadFrom(make([]byte, 128)); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("read after Close = %v, want net.ErrClosed", err)
+	}
+	for _, setter := range []struct {
+		name string
+		set  func(time.Time) error
+	}{
+		{"SetDeadline", conn.SetDeadline},
+		{"SetReadDeadline", conn.SetReadDeadline},
+		{"SetWriteDeadline", conn.SetWriteDeadline},
+	} {
+		if err := setter.set(time.Now().Add(time.Minute)); !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("%s after Close = %v, want net.ErrClosed", setter.name, err)
+		}
+	}
+	// Supply a valid complete packet so packet validation cannot mask closure.
+	// Stack-driven closure may translate ErrInvalidEndpointState to EINVAL;
+	// the lifecycle contract here is that the write fails without sending data.
+	v6 := test.remote.Is6()
+	payload := testICMPPayload(v6, false, test.local, test.remote, []byte("closed-write"))
+	packet := testIPPacket(v6, test.local, test.remote, 64, 0, payload, false)
+	var n int
+	var err error
+	if test.dial {
+		n, err = conn.Write(packet)
+	} else {
+		n, err = conn.WriteTo(packet, ipNetAddr(test.remote))
+	}
+	if n != 0 || err == nil {
+		t.Fatalf("write after Close = %d, %v, want 0 and an error", n, err)
+	}
+}
+
+func TestIPConnListenAfterDeviceClose(t *testing.T) {
+	for _, network := range []string{"ip4:icmp", "ip6:ipv6-icmp"} {
+		t.Run(network, func(t *testing.T) {
+			w := newIPTestDevice(t)
+			closeTestStackDevice(t, w)
+			conn, err := w.ListenIP(context.Background(), network, netip.Addr{})
+			if conn != nil {
+				defer conn.Close()
+				t.Fatal("listen returned a connection after device Close")
+			}
+			if !errors.Is(err, net.ErrClosed) {
+				t.Fatalf("listen after device Close = %v, want net.ErrClosed", err)
+			}
+			checkNoCleanupEndpoints(t, w)
+		})
+	}
+}
+
+func TestIPConnCloseRemovesCleanupEndpoint(t *testing.T) {
+	for _, test := range ipCloseTestCases() {
+		t.Run(test.name, func(t *testing.T) {
+			w := newIPTestDevice(t)
+			conn, err := test.open(w)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			if count := len(w.stack.CleanupEndpoints()); count != 1 {
+				t.Fatalf("tracked cleanup endpoints = %d, want 1", count)
+			}
+			if err = conn.Close(); err != nil {
+				t.Fatal(err)
+			}
+			checkIPConnClosed(t, conn, test)
+			if err = conn.Close(); err != nil {
+				t.Fatalf("repeated connection Close: %v", err)
+			}
+			checkNoCleanupEndpoints(t, w)
+			if err = w.ctx.Err(); err != nil {
+				t.Fatalf("connection Close canceled the device: %v", err)
+			}
+		})
+	}
+}
+
+func TestIPConnDeviceClose(t *testing.T) {
+	for _, test := range ipCloseTestCases() {
+		for _, deadline := range []struct {
+			name  string
+			value time.Duration
+		}{{"NoDeadline", 0}, {"WithDeadline", time.Minute}} {
+			t.Run(test.name+"/"+deadline.name, func(t *testing.T) {
+				w := newIPTestDevice(t)
+				conn, err := test.open(w)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer conn.Close()
+				if deadline.value != 0 {
+					if err = conn.SetReadDeadline(time.Now().Add(deadline.value)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				readDone := make(chan error, 1)
+				go func() {
+					var readErr error
+					if test.dial {
+						_, readErr = conn.Read(make([]byte, 128))
+					} else {
+						_, _, readErr = conn.ReadFrom(make([]byte, 128))
+					}
+					readDone <- readErr
+				}()
+				limit := time.Now().Add(stackCloseTestTimeout)
+				for conn.waiter.Events()&waiter.ReadableEvents == 0 {
+					if time.Now().After(limit) {
+						t.Fatal("IP read did not register its waiter")
+					}
+					time.Sleep(time.Millisecond)
+				}
+				closeTestStackDevice(t, w)
+				select {
+				case err = <-readDone:
+					if !errors.Is(err, net.ErrClosed) {
+						t.Fatalf("blocked read after device Close = %v, want net.ErrClosed", err)
+					}
+				case <-time.After(stackCloseTestTimeout):
+					t.Fatal("device Close did not wake IP read")
+				}
+				checkIPConnClosed(t, conn, test)
+				checkNoCleanupEndpoints(t, w)
+			})
+		}
+	}
+}
+
+func releaseCloseTestSignal(signal chan struct{}) {
+	select {
+	case <-signal:
+	default:
+		close(signal)
+	}
+}
+
+func TestIPConnCreationAfterCleanupSnapshot(t *testing.T) {
+	for _, test := range ipCloseTestCases() {
+		t.Run(test.name, func(t *testing.T) {
+			w := newIPTestDevice(t)
+			holder, err := w.ListenIP(context.Background(), test.network, netip.Addr{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer holder.Close()
+			ipHolder := holder.(*gIPConn)
+			entered, resume := make(chan struct{}), make(chan struct{})
+			// Pause the first endpoint's Abort after the cleanup snapshot has
+			// been taken, while the NIC still exists and new endpoints can bind.
+			entry := waiter.NewFunctionEntry(waiter.EventHUp, func(waiter.EventMask) {
+				close(entered)
+				<-resume
+			})
+			ipHolder.waiter.EventRegister(&entry)
+			defer ipHolder.waiter.EventUnregister(&entry)
+			defer releaseCloseTestSignal(resume)
+			closeDone := make(chan error, 1)
+			go func() { closeDone <- w.Close() }()
+			select {
+			case <-entered:
+			case <-time.After(stackCloseTestTimeout):
+				t.Fatal("device Close did not reach endpoint Abort")
+			}
+			conn, err := test.open(w)
+			if conn != nil {
+				defer conn.Close()
+				t.Fatal("creation returned a connection after the cleanup snapshot")
+			}
+			if !errors.Is(err, net.ErrClosed) {
+				t.Fatalf("late creation = %v, want net.ErrClosed", err)
+			}
+			if count := len(w.stack.CleanupEndpoints()); count != 1 {
+				t.Fatalf("late creation left %d cleanup endpoints, want only the paused endpoint", count)
+			}
+			releaseCloseTestSignal(resume)
+			awaitStackClose(t, closeDone)
+			checkNoCleanupEndpoints(t, w)
+		})
+	}
+}
+
+type closeOnErrContext struct {
+	context.Context
+	onErr func()
+	once  sync.Once
+}
+
+func (c *closeOnErrContext) Err() error {
+	err := c.Context.Err()
+	c.once.Do(c.onErr)
+	return err
+}
+
+func TestIPConnPublicationOverlappingDeviceClose(t *testing.T) {
+	for _, test := range ipCloseTestCases() {
+		t.Run(test.name, func(t *testing.T) {
+			w := newIPTestDevice(t)
+			// Model cancellation after Err has observed nil but before it
+			// returns. Cleanup registration must precede that observation.
+			w.ctx = &closeOnErrContext{Context: w.ctx, onErr: func() {
+				closeTestStackDevice(t, w)
+			}}
+			conn, err := test.open(w)
+			if conn != nil {
+				defer conn.Close()
+			}
+			select {
+			case <-w.ctx.Done():
+			default:
+				t.Fatal("creation did not check the device context")
+			}
+			if err != nil {
+				if conn != nil {
+					t.Fatal("failed creation returned a connection")
+				}
+			} else {
+				if conn == nil {
+					t.Fatal("creation returned nil connection and nil error")
+				}
+				checkIPConnClosed(t, conn, test)
+			}
+			checkNoCleanupEndpoints(t, w)
+		})
+	}
+}
+
+func TestIPConnConcurrentClose(t *testing.T) {
+	w := newIPTestDevice(t)
+	var conns []*gIPConn
+	for _, test := range ipCloseTestCases() {
+		conn, err := test.open(w)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		conns = append(conns, conn)
+	}
+	start := make(chan struct{})
+	done := make(chan error, len(conns)+1)
+	for _, conn := range conns {
+		go func(conn *gIPConn) {
+			<-start
+			done <- conn.Close()
+		}(conn)
+	}
+	go func() {
+		<-start
+		done <- w.Close()
+	}()
+	close(start)
+	for i := 0; i < cap(done); i++ {
+		awaitStackClose(t, done)
+	}
+	checkNoCleanupEndpoints(t, w)
+	for _, conn := range conns {
+		if state := conn.endpoint.State(); state != uint32(transport.DatagramEndpointStateClosed) {
+			t.Fatalf("concurrent Close left raw endpoint state %d", state)
+		}
 	}
 }
 

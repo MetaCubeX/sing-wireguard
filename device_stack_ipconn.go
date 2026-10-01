@@ -13,6 +13,8 @@ import (
 
 	"github.com/metacubex/gvisor/pkg/tcpip"
 	"github.com/metacubex/gvisor/pkg/tcpip/adapters/gonet"
+	"github.com/metacubex/gvisor/pkg/tcpip/stack"
+	"github.com/metacubex/gvisor/pkg/tcpip/transport"
 	"github.com/metacubex/gvisor/pkg/waiter"
 )
 
@@ -350,7 +352,7 @@ func (c *gIPConn) isClosed() bool {
 	case <-c.closed:
 		return true
 	default:
-		return false
+		return c.endpoint.State() == uint32(transport.DatagramEndpointStateClosed)
 	}
 }
 
@@ -363,6 +365,36 @@ func (c *gIPConn) operationError(operation string, address net.Addr, err error) 
 		Err:    err,
 	}
 }
+
+// ipCleanupEndpoint joins cleanup tracking while the underlying raw endpoint
+// remains registered for packet delivery. It has no packet dispatch role.
+type ipCleanupEndpoint struct {
+	tcpip.Endpoint
+	stack *stack.Stack
+}
+
+var _ stack.TransportEndpoint = (*ipCleanupEndpoint)(nil)
+
+func newIPCleanupEndpoint(ipStack *stack.Stack, endpoint tcpip.Endpoint) *ipCleanupEndpoint {
+	e := &ipCleanupEndpoint{Endpoint: endpoint, stack: ipStack}
+	ipStack.RestoreCleanupEndpoints([]stack.TransportEndpoint{e})
+	return e
+}
+
+func (e *ipCleanupEndpoint) Close() {
+	e.Endpoint.Close()
+	e.stack.CompleteTransportEndpointCleanup(e)
+}
+
+func (e *ipCleanupEndpoint) Abort() {
+	e.Close()
+}
+
+func (*ipCleanupEndpoint) Wait() {}
+
+func (*ipCleanupEndpoint) HandlePacket(stack.TransportEndpointID, *stack.PacketBuffer) {}
+
+func (*ipCleanupEndpoint) HandleError(stack.TransportError, *stack.PacketBuffer) {}
 
 func ipNetAddr(address netip.Addr) *net.IPAddr {
 	if !address.IsValid() {

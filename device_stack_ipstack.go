@@ -224,6 +224,10 @@ func (w *StackDevice) DialIP(ctx context.Context, network string, source, destin
 	if !local.IsValid() || local.IsUnspecified() {
 		local = w.defaultIPAddress(configuration.v6)
 	}
+	endpoint = newIPCleanupEndpoint(w.stack, endpoint)
+	if w.ctx.Err() != nil {
+		return wrap(ipNetAddr(local), net.ErrClosed)
+	}
 	failed = false
 	return newIPConn(endpoint, waitQueue, network, configuration.v6, local, destination), nil
 }
@@ -273,6 +277,10 @@ func (w *StackDevice) ListenIP(ctx context.Context, network string, local netip.
 		} else {
 			local = netip.IPv4Unspecified()
 		}
+	}
+	endpoint = newIPCleanupEndpoint(w.stack, endpoint)
+	if w.ctx.Err() != nil {
+		return wrap(net.ErrClosed)
 	}
 	failed = false
 	return newIPConn(endpoint, waitQueue, network, configuration.v6, local, netip.Addr{}), nil
