@@ -163,6 +163,10 @@ func (w *StackDevice) ListenUDP(ctx context.Context, network string, local netip
 		endpoint.Close()
 		return wrap(gonet.TranslateNetstackError(tcpipErr))
 	}
+	if w.ctx.Err() != nil {
+		endpoint.Close()
+		return wrap(net.ErrClosed)
+	}
 	return gonet.NewUDPConn(&waitQueue, endpoint), nil
 }
 
