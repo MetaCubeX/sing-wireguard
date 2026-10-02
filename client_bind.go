@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/metacubex/sing/common"
 	"github.com/metacubex/sing/common/bufio"
 	E "github.com/metacubex/sing/common/exceptions"
 	M "github.com/metacubex/sing/common/metadata"
@@ -63,12 +64,14 @@ func (c *ClientBind) connect() (*wireConn, error) {
 		if err != nil {
 			return nil, err
 		}
+		setSocketBuffers(udpConn)
 		packetConn = bufio.NewUnbindPacketConn(udpConn)
 	} else {
 		udpConn, err := c.dialer.ListenPacket(c.bindCtx, M.Socksaddr{Addr: netip.IPv4Unspecified()})
 		if err != nil {
 			return nil, err
 		}
+		setSocketBuffers(udpConn)
 		packetConn = udpConn
 	}
 	serverConn = &wireConn{PacketConn: packetConn}
@@ -208,4 +211,18 @@ func (w *wireConn) Close() error {
 		return nil
 	}
 	return w.PacketConn.Close()
+}
+
+// socketBufferSize is what wireguard-go's StdNetBind asks for (conn/controlfns*.go). The OS default (64 KiB on
+// Windows, ~208 KiB on Linux) overflows on the bursts a server sends at line rate, and TCP inside the tunnel takes
+// every overflow for path loss.
+const socketBufferSize = 7 << 20
+
+func setSocketBuffers(udpConn any) {
+	if c, ok := common.Cast[interface{ SetReadBuffer(int) error }](udpConn); ok {
+		_ = c.SetReadBuffer(socketBufferSize)
+	}
+	if c, ok := common.Cast[interface{ SetWriteBuffer(int) error }](udpConn); ok {
+		_ = c.SetWriteBuffer(socketBufferSize)
+	}
 }
